@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ntcad-plugins",
+  "description": "Personal Claude Code plugins.",
+  "owner": { "name": "ntcad" },
+  "plugins": [
+    {
+      "name": "codex-delegation",
+      "description": "Delegate subagent work to the Codex CLI, with a Claude judge that verifies the result and pushes Codex until acceptance criteria pass.",
+      "source": "./plugins/codex-delegation",
+      "category": "development"
+    }
+  ]
+}
