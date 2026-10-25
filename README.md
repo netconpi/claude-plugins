@@ -14,7 +14,7 @@ Model and effort: `CODEX_TASK_MODEL` (default `gpt-6.1-sol`), `CODEX_TASK_EFFORT
 ### Install
 
 ```sh
-claude plugin marketplace add netconpi/claude-plugins   # private: the machine needs GitHub access (gh auth login)
+claude plugin marketplace add netconpi/claude-plugins
 claude plugin install codex-delegation@ntcad-plugins
 ```
 
