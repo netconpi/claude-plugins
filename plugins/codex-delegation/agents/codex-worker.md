@@ -33,6 +33,7 @@ codex-task wait "$RUN"            # blocks up to 540 s; repeat while state: runn
   Use `danger-full-access` only when the task explicitly needs network or writes outside the repo.
 - While `state: running`, call `codex-task wait "$RUN"` again. Use `codex-task log "$RUN"` to see progress if useful.
 - If a single round exceeds ~40 minutes with no progress in `log`, `codex-task stop "$RUN"` and report it.
+- If a round ends with `429 Too Many Requests`, a usage-limit or auth error, do not retry in a loop: report FAILED with the error line. That is an account problem, not a task problem.
 
 ## 3. Judge
 
