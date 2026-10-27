@@ -1,0 +1,7 @@
+{
+  "name": "codex-imagegen",
+  "version": "0.1.0",
+  "description": "Generate and edit images through the Codex CLI's built-in image tool (gpt-image-2). Claude calls it directly, looks at the result and iterates; Codex runs read-only as an image backend.",
+  "author": { "name": "ntcad" },
+  "keywords": ["codex", "image", "imagegen", "gpt-image"]
+}

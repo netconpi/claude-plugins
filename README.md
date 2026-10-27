@@ -51,3 +51,20 @@ claude plugin install kimi-delegation@ntcad-plugins
 ```
 
 Claude.ai and Cowork can't run this either: their sandbox has no local `kimi` CLI.
+
+## codex-imagegen
+
+Lets Claude generate and edit images through the Codex CLI's built-in image tool (`image_gen`, gpt-image-2). No delegation and no judge subagent: Claude writes the spec, runs `codex-image`, looks at the result with Read and iterates (`--edit <previous.png>` with one targeted change). Codex runs as an image backend only, in a read-only sandbox, and the script copies the image to the path Claude chooses.
+
+- `skills/codex-imagegen/SKILL.md`: when to generate (bitmaps, photo edits, cutouts) and when to draw as code instead; the spec template; the look-and-iterate loop
+- `scripts/codex-image`: `codex-image --out FILE.png [--n 1-4] [--ref IMG]... [--edit IMG]... [--transparent] [--timeout SEC] [--force] < spec.md`. Synchronous (default timeout 540 s), never overwrites without `--force`, prints `status`, image paths with pixel size and the revised prompt; exit 0 / 3 partial / 1 failed. Images come from `~/.codex/generated_images/<thread>/`; logs in `~/.cache/codex-image/`.
+
+Requirements on each machine: `codex` on PATH, logged in with a paid ChatGPT plan (the built-in image tool is not offered to API-key or Free logins). Size is chosen by the tool; ask for the aspect ratio in the spec and resize afterwards if needed.
+Env: `CODEX_IMAGE_MODEL` (default `gpt-6.1-sol`), `CODEX_IMAGE_EFFORT` (default `low`), `CODEX_IMAGE_HOME`.
+
+### Install
+
+```sh
+claude plugin marketplace update ntcad-plugins
+claude plugin install codex-imagegen@ntcad-plugins
+```

@@ -15,6 +15,12 @@
       "description": "Delegate subagent work to the Kimi Code CLI, with a Claude judge that verifies the result and pushes Kimi until acceptance criteria pass. Ultimate mode: Kimi orchestrates and judges Codex CLI runs.",
       "source": "./plugins/kimi-delegation",
       "category": "development"
+    },
+    {
+      "name": "codex-imagegen",
+      "description": "Generate and edit images through the Codex CLI's built-in image tool (gpt-image-2). Claude calls it directly, looks at the result and iterates.",
+      "source": "./plugins/codex-imagegen",
+      "category": "productivity"
     }
   ]
 }
