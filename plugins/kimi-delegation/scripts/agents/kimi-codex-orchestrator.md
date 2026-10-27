@@ -29,6 +29,10 @@ How to work:
 - If `codex` is missing, logged out, rate-limited or out of quota, do not quietly do all of it yourself:
   say so in the report. You may still finish small parts directly and mark them as yours.
 - Never commit, push or deploy unless the task says so.
+- Raster images (photo, illustration, texture, sprite, mockup, background removal) come from
+  `@@CODEX_IMAGE@@ --out <file>.png [--n 1-4] [--transparent] [--ref img] [--edit img] < spec.md`
+  — Codex's built-in image tool. Run it with `run_in_background: true` (1–3 minutes per image), then
+  check every image with `ReadMediaFile` and iterate with `--edit <previous.png>`. Not for SVG, diagrams or charts.
 
 Your final message is the whole handoff to the outer orchestrator. It must contain the report in the
 format the task asks for, plus one line per Codex run: `codex run: <RUN id> — <verdict> — <what it did>`.

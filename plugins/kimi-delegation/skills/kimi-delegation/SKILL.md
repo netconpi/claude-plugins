@@ -24,6 +24,9 @@ you ──► kimi-worker (judge) ──kimi-task──► Kimi (orchestrator + 
 | `read-only` | Kimi, with Write/Edit removed | investigations, code reviews, "explain this" |
 | `codex` | Kimi plans and judges, Codex executes | big or parallelizable tasks; when the user wants Kimi + Codex |
 
+In `codex` mode Kimi can also generate raster images through Codex's built-in image tool
+(the bundled `codex-image` script); say so in the brief when the task needs images.
+
 ## When to use
 
 - The user asks for Kimi, or for the Kimi + Codex ultimate mode.

@@ -33,6 +33,7 @@ READ_ONLY_AGENT="$SELF_DIR/agents/kimi-read-only.md"
 ORCHESTRATOR_TPL="$SELF_DIR/agents/kimi-codex-orchestrator.md"
 CODEX_PLUGIN="$PLUGIN_ROOT/kimi/codex-delegation"
 CODEX_TASK="$CODEX_PLUGIN/skills/codex-delegation/scripts/codex-task"
+CODEX_IMAGE="$CODEX_PLUGIN/skills/codex-image/scripts/codex-image"
 CODEX_WORKER_MD="$CODEX_PLUGIN/agents/codex-worker.md"
 
 die() { echo "kimi-task: $*" >&2; exit 2; }
@@ -73,19 +74,23 @@ PY
   fi
 }
 
-# Codex mode main agent: orchestrator preamble + the Kimi codex-worker protocol, wrapper path filled in.
+sed_escape() { printf '%s' "$1" | sed 's/[\\&#]/\\&/g'; }
+
+# Codex mode main agent: orchestrator preamble + the Kimi codex-worker protocol, wrapper paths filled in.
 render_codex_agent() {
-  local out="$1" esc
+  local out="$1" task_esc image_esc
   [ -x "$CODEX_TASK" ] || die "missing $CODEX_TASK"
+  [ -x "$CODEX_IMAGE" ] || die "missing $CODEX_IMAGE"
   [ -f "$CODEX_WORKER_MD" ] || die "missing $CODEX_WORKER_MD"
   [ -f "$ORCHESTRATOR_TPL" ] || die "missing $ORCHESTRATOR_TPL"
-  esc="$(printf '%s' "$CODEX_TASK" | sed 's/[\\&#]/\\&/g')"
+  task_esc="$(sed_escape "$CODEX_TASK")"
+  image_esc="$(sed_escape "$CODEX_IMAGE")"
   {
     cat "$ORCHESTRATOR_TPL"
     echo
     # agent body without its YAML frontmatter
     awk 'n >= 2 { print; next } /^---[[:space:]]*$/ { n++ }' "$CODEX_WORKER_MD"
-  } | sed "s#@@CODEX_TASK@@#$esc#g" > "$out"
+  } | sed -e "s#@@CODEX_TASK@@#$task_esc#g" -e "s#@@CODEX_IMAGE@@#$image_esc#g" > "$out"
 }
 
 # Prefix that puts a command in its own process group, so `stop` can kill the whole tree.

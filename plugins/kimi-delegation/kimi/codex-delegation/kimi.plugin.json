@@ -1,14 +1,14 @@
 {
   "name": "codex-delegation",
-  "version": "0.1.0",
-  "description": "Delegate subagent work to the Codex CLI (gpt-6.1-sol). A codex-worker subagent briefs Codex, waits, judges the result against acceptance criteria and sends follow-up rounds until done.",
+  "version": "0.2.0",
+  "description": "Delegate subagent work to the Codex CLI (gpt-6.1-sol) with a codex-worker judge, and generate or edit images through Codex's built-in image tool (codex-image skill).",
   "author": { "name": "ntcad" },
-  "keywords": ["codex", "delegation", "subagents", "orchestration"],
+  "keywords": ["codex", "delegation", "subagents", "orchestration", "image"],
   "skills": "./skills/",
   "agents": "./agents/",
   "interface": {
     "displayName": "Codex Delegation",
-    "shortDescription": "Hand subagent work to Codex CLI with a judge that verifies it",
+    "shortDescription": "Hand work to Codex CLI with a judge; generate images through Codex",
     "developerName": "ntcad"
   }
 }

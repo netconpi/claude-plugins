@@ -8,14 +8,14 @@
 #   codex-task resume RUN                                      < followup.md -> next round, same thread
 #   codex-task status RUN
 #   codex-task log    RUN [N]        # last N agent messages / commands of the current round
-#
-# Portable to macOS (bash 3.2, no setsid). Bundled copy of codex-delegation/scripts/codex-task for Kimi.
 #   codex-task stop   RUN
 #
 # Defaults (override via env):
 #   CODEX_TASK_MODEL   model id            (default: gpt-6.1-sol)
 #   CODEX_TASK_EFFORT  reasoning effort    (default: high)
 #   CODEX_TASK_HOME    run directory root  (default: ~/.cache/codex-task)
+#
+# Portable to macOS (bash 3.2, no setsid). Bundled copy of codex-delegation/scripts/codex-task for Kimi.
 set -euo pipefail
 
 MODEL="${CODEX_TASK_MODEL:-gpt-6.1-sol}"
