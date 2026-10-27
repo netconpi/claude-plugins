@@ -21,3 +21,33 @@ claude plugin install codex-delegation@ntcad-plugins
 Update after pulling changes: `claude plugin marketplace update ntcad-plugins && claude plugin update codex-delegation@ntcad-plugins`. Restart Claude Code sessions to pick up new agents.
 
 Claude.ai and Cowork can't run this: their sandbox has no local `codex` CLI.
+
+## kimi-delegation
+
+Same shape as `codex-delegation`, with the [Kimi Code CLI](https://github.com/MoonshotAI/kimi-code) as the worker. A Claude `kimi-worker` subagent (Sonnet) writes the brief, runs Kimi, checks the result against the acceptance criteria, and resumes the same Kimi session with concrete gaps (up to 3 follow-up rounds). It returns `DONE` / `PARTIAL` / `FAILED` with evidence.
+
+Modes (the orchestrator names one in the task):
+
+- `default`: Kimi does the work itself (`kimi -p`, every tool call auto-approved, no OS sandbox).
+- `read-only`: investigations and reviews; Kimi's Write/Edit tools are removed and shell writes are forbidden in the prompt (a guard, not a sandbox).
+- `codex`: the ultimate mode, Claude → Kimi → Codex. Kimi plans, hands the heavy parts to Codex runs (in parallel git worktrees when useful), judges each run itself, merges and reports. `kimi-worker` then judges Kimi's result. `status` lists the Codex runs Kimi started; `stop` stops them too.
+
+Files:
+
+- `agents/kimi-worker.md`: the judge (subagent type `kimi-delegation:kimi-worker`)
+- `skills/kimi-delegation/SKILL.md`: when and how the orchestrator delegates; triggers on "use Kimi", "через Kimi", "Kimi + Codex", "ульта"
+- `scripts/kimi-task`: background wrapper around `kimi -p --output-format stream-json` (`start --mode default|read-only|codex` / `wait` / `resume` / `status` / `log` / `stop`); runs live in `~/.cache/kimi-task/`
+- `scripts/agents/`: Kimi main-agent files for `read-only` and `codex` mode (passed with `--agent-file`)
+- `kimi/codex-delegation/`: a Kimi-native plugin (skill + `codex-worker` judge + a copy of `codex-task`). Codex mode uses it without installation. To delegate to Codex from Kimi directly, install it in Kimi: `/plugins install <path to plugins/kimi-delegation/kimi/codex-delegation>`, then `/reload`.
+
+Requirements on each machine: Kimi Code CLI 2.3+ logged in (`kimi login`), `jq` or `python3`; for `codex` mode also `codex` logged in. Works with macOS stock bash 3.2 and without setsid.
+Env: `KIMI_TASK_MODEL` (default: `default_model` from `~/.kimi-code/config.toml`), `KIMI_TASK_HOME`, `CODEX_TASK_MODEL`, `CODEX_TASK_EFFORT`.
+
+### Install
+
+```sh
+claude plugin marketplace update ntcad-plugins
+claude plugin install kimi-delegation@ntcad-plugins
+```
+
+Claude.ai and Cowork can't run this either: their sandbox has no local `kimi` CLI.

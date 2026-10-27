@@ -1,0 +1,7 @@
+{
+  "name": "kimi-delegation",
+  "version": "0.1.0",
+  "description": "Delegate subagent work to the Kimi Code CLI. A kimi-worker subagent briefs Kimi, waits, judges the result against acceptance criteria and sends follow-up rounds until done. Ultimate mode: Kimi orchestrates and judges Codex CLI runs (Claude → Kimi → Codex).",
+  "author": { "name": "ntcad" },
+  "keywords": ["kimi", "codex", "delegation", "subagents", "orchestration"]
+}

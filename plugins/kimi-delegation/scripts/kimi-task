@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+# kimi-task: run Kimi Code CLI jobs in the background so a Claude subagent can wait
+# on them in chunks shorter than its tool timeout, and resume the same Kimi
+# session with follow-up instructions.
+#
+#   kimi-task start  --cd DIR [--mode MODE] [--name NAME] [--add-dir DIR]...  < brief.md   -> prints RUN id
+#   kimi-task wait   RUN [--timeout SECONDS]                                   -> blocks, prints status
+#   kimi-task resume RUN                                         < followup.md -> next round, same session
+#   kimi-task status RUN
+#   kimi-task log    RUN [N]        # last N messages / tool calls of the current round
+#   kimi-task stop   RUN            # in codex mode also stops the Codex runs Kimi started
+#
+# Modes:
+#   default    Kimi does the work itself (kimi -p auto-approves every tool call).
+#   read-only  Kimi's Write/Edit tools are removed; for investigations and reviews.
+#   codex      Ultimate: Kimi orchestrates Codex CLI runs and judges them (needs codex on PATH).
+#
+# Defaults (override via env):
+#   KIMI_TASK_MODEL   Kimi model alias     (default: default_model from ~/.kimi-code/config.toml)
+#   KIMI_TASK_HOME    run directory root   (default: ~/.cache/kimi-task)
+#   KIMI_TASK_BIN     kimi executable      (default: kimi)
+#   CODEX_TASK_MODEL / CODEX_TASK_EFFORT   inherited by Codex runs in codex mode
+#
+# Portable to macOS: bash 3.2, BSD userland; jq or python3 is used to decode the final message.
+set -euo pipefail
+
+MODEL="${KIMI_TASK_MODEL:-}"
+HOME_DIR="${KIMI_TASK_HOME:-$HOME/.cache/kimi-task}"
+KIMI="${KIMI_TASK_BIN:-kimi}"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(cd "$SELF_DIR/.." && pwd)"
+READ_ONLY_AGENT="$SELF_DIR/agents/kimi-read-only.md"
+ORCHESTRATOR_TPL="$SELF_DIR/agents/kimi-codex-orchestrator.md"
+CODEX_PLUGIN="$PLUGIN_ROOT/kimi/codex-delegation"
+CODEX_TASK="$CODEX_PLUGIN/skills/codex-delegation/scripts/codex-task"
+CODEX_WORKER_MD="$CODEX_PLUGIN/agents/codex-worker.md"
+
+die() { echo "kimi-task: $*" >&2; exit 2; }
+need_run() { [ -n "${1:-}" ] && [ -d "$HOME_DIR/$1" ] || die "unknown run '${1:-}'"; }
+round_dir() { echo "$HOME_DIR/$1/round-$(cat "$HOME_DIR/$1/round")"; }
+
+# Kimi ends every -p run with {"role":"meta","type":"session.resume_hint","session_id":"..."}.
+session_id() {
+  local f
+  if [ -s "$HOME_DIR/$1/session" ]; then cat "$HOME_DIR/$1/session"; return 0; fi
+  for f in "$HOME_DIR/$1"/round-*/events.jsonl; do
+    [ -f "$f" ] || continue
+    sed -n 's/.*"type":"session\.resume_hint","session_id":"\([^"]*\)".*/\1/p' "$f"
+  done | tail -1
+}
+
+# Final message of a round: the last assistant line that carries text.
+extract_last() {
+  if command -v jq >/dev/null 2>&1; then
+    jq -rR 'fromjson? | select(type == "object" and .role == "assistant" and (.content | type) == "string" and .content != "") | .content | @json' "$1" \
+      | tail -1 | jq -r '.'
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$1" <<'PY'
+import json, sys
+last = None
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try:
+        m = json.loads(line)
+    except ValueError:
+        continue
+    if isinstance(m, dict) and m.get("role") == "assistant" and isinstance(m.get("content"), str) and m["content"]:
+        last = m["content"]
+if last is not None:
+    print(last)
+PY
+  else
+    grep '"role":"assistant","content":' "$1" | tail -1
+  fi
+}
+
+# Codex mode main agent: orchestrator preamble + the Kimi codex-worker protocol, wrapper path filled in.
+render_codex_agent() {
+  local out="$1" esc
+  [ -x "$CODEX_TASK" ] || die "missing $CODEX_TASK"
+  [ -f "$CODEX_WORKER_MD" ] || die "missing $CODEX_WORKER_MD"
+  [ -f "$ORCHESTRATOR_TPL" ] || die "missing $ORCHESTRATOR_TPL"
+  esc="$(printf '%s' "$CODEX_TASK" | sed 's/[\\&#]/\\&/g')"
+  {
+    cat "$ORCHESTRATOR_TPL"
+    echo
+    # agent body without its YAML frontmatter
+    awk 'n >= 2 { print; next } /^---[[:space:]]*$/ { n++ }' "$CODEX_WORKER_MD"
+  } | sed "s#@@CODEX_TASK@@#$esc#g" > "$out"
+}
+
+# Prefix that puts a command in its own process group, so `stop` can kill the whole tree.
+# setsid is not on stock macOS; perl is.
+if command -v setsid >/dev/null 2>&1; then
+  DETACH=(setsid nohup)
+elif command -v perl >/dev/null 2>&1; then
+  DETACH=(nohup perl -e 'use POSIX (); POSIX::setsid(); exec @ARGV or die "exec: $!"')
+else
+  DETACH=(nohup)
+fi
+
+# Launch one Kimi round detached from this shell; stdin of this process is the prompt.
+launch() {
+  local run="$1" rd="$2"; shift 2
+  mkdir -p "$rd"
+  cat > "$rd/prompt.md"
+  [ -s "$rd/prompt.md" ] || die "empty prompt on stdin"
+  local cwd; cwd="$(cat "$HOME_DIR/$run/cwd")"
+  (
+    cd "$cwd"
+    "${DETACH[@]}" bash -c '
+      rd="$1"; shift
+      "$@" --prompt="$(cat "$rd/prompt.md")" < /dev/null > "$rd/events.jsonl" 2> "$rd/stderr.log"
+      echo $? > "$rd/exit"
+    ' _ "$rd" "$@" >/dev/null 2>&1 &
+    echo $! > "$rd/pid"
+  )
+  date +%s > "$rd/started"
+}
+
+# Command prefix for a round: codex mode gives Kimi a private codex-task home inside this run.
+kimi_cmd() {
+  local run="$1"
+  if [ "$(cat "$HOME_DIR/$run/mode")" = codex ]; then
+    printf '%s\n' env "CODEX_TASK_HOME=$HOME_DIR/$run/codex"
+  fi
+  printf '%s\n' "$KIMI" --output-format stream-json
+  if [ -n "$MODEL" ]; then printf '%s\n' -m "$MODEL"; fi
+}
+
+# One line per Codex run that Kimi started (codex mode).
+codex_runs() {
+  local dir="$HOME_DIR/$1/codex" r rd state
+  [ -d "$dir" ] || return 0
+  for r in "$dir"/*/; do
+    [ -f "$r/round" ] || continue
+    rd="$r/round-$(cat "$r/round")"
+    if [ -f "$rd/exit" ]; then state="done exit=$(cat "$rd/exit")"
+    elif kill -0 "$(cat "$rd/pid" 2>/dev/null || echo 0)" 2>/dev/null; then state="running"
+    else state="died"; fi
+    echo "  $(basename "$r") round=$(cat "$r/round") $state"
+  done
+}
+
+print_status() {
+  local run="$1" rd; rd="$(round_dir "$run")"
+  local now started; now=$(date +%s); started=$(cat "$rd/started" 2>/dev/null || echo "$now")
+  echo "run: $run"
+  echo "mode: $(cat "$HOME_DIR/$run/mode")"
+  echo "round: $(cat "$HOME_DIR/$run/round")"
+  echo "session: $(session_id "$run")"
+  echo "cwd: $(cat "$HOME_DIR/$run/cwd")"
+  echo "elapsed: $((now - started))s"
+  if [ -d "$HOME_DIR/$run/codex" ]; then echo "codex runs:"; codex_runs "$run"; fi
+  if [ -f "$rd/exit" ]; then
+    local code sid retries
+    code="$(cat "$rd/exit")"
+    sid="$(session_id "$run")"
+    if [ -n "$sid" ] && [ ! -s "$HOME_DIR/$run/session" ]; then echo "$sid" > "$HOME_DIR/$run/session"; fi
+    if [ ! -f "$rd/last.md" ]; then extract_last "$rd/events.jsonl" > "$rd/last.md" 2>/dev/null || true; fi
+    echo "state: done"
+    echo "exit: $code"
+    retries=$(grep -c '"type":"turn.step.retrying"' "$rd/events.jsonl" 2>/dev/null || true)
+    if [ "${retries:-0}" -gt 0 ]; then echo "retries: $retries (provider errors; see $rd/events.jsonl)"; fi
+    if [ "$code" != 0 ] && [ -s "$rd/stderr.log" ]; then
+      echo "errors (stderr tail):"; grep -v '^[[:space:]]*$' "$rd/stderr.log" | tail -5
+    fi
+    echo "--- final message ($rd/last.md) ---"
+    if [ -s "$rd/last.md" ]; then cat "$rd/last.md"; echo; else echo "(none; see $rd/stderr.log)"; fi
+  else
+    if kill -0 "$(cat "$rd/pid" 2>/dev/null || echo 0)" 2>/dev/null; then
+      echo "state: running"
+    else
+      echo "state: died (no exit code; see $rd/stderr.log)"
+    fi
+  fi
+}
+
+print_log() {
+  local f="$1" n="$2"
+  [ -f "$f" ] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    jq -rR '
+      fromjson? | select(type == "object") |
+      if .role == "assistant" then
+        ((.content // "") | if . != "" then "say: " + gsub("\n"; " ") else empty end),
+        ((.tool_calls // [])[] | "call: " + (.function.name // "?") + " " + ((.function.arguments // "") | gsub("\n"; " ")))
+      elif .role == "tool" then "result: " + ((.content // "") | tostring | gsub("\n"; " "))
+      elif .role == "meta" then "meta: " + (.type // "")
+      else empty end' "$f" | tail -n "$n" | cut -c1-400
+  else
+    tail -n "$n" "$f" | cut -c1-400
+  fi
+}
+
+kill_group() {
+  local pid; pid="$(cat "$1/pid" 2>/dev/null || true)"
+  [ -n "$pid" ] || return 0
+  kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  start)
+    cwd="$PWD"; mode="default"; name="task"
+    extra=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --cd) cwd="$2"; shift 2 ;;
+        --mode) mode="$2"; shift 2 ;;
+        --name) name="$2"; shift 2 ;;
+        --add-dir) extra+=(--add-dir "$2"); shift 2 ;;
+        *) die "unknown option $1" ;;
+      esac
+    done
+    [ -d "$cwd" ] || die "no such directory $cwd"
+    case "$mode" in default|read-only|codex) ;; *) die "bad mode $mode (default|read-only|codex)" ;; esac
+    command -v "$KIMI" >/dev/null 2>&1 || die "kimi not found: install Kimi Code CLI and run 'kimi login'"
+    if [ "$mode" = codex ] && ! command -v codex >/dev/null 2>&1; then
+      die "codex mode needs the Codex CLI on PATH"
+    fi
+    run="$(date +%Y%m%d-%H%M%S)-$(printf %s "$name" | tr -c 'a-zA-Z0-9-' '-' | cut -c1-30)-$$"
+    mkdir -p "$HOME_DIR/$run"
+    (cd "$cwd" && pwd) > "$HOME_DIR/$run/cwd"
+    echo "$mode" > "$HOME_DIR/$run/mode"
+    echo 1 > "$HOME_DIR/$run/round"
+    cmdline=()
+    while IFS= read -r line; do cmdline+=("$line"); done < <(kimi_cmd "$run")
+    case "$mode" in
+      read-only) cmdline+=(--agent-file "$READ_ONLY_AGENT") ;;
+      codex)
+        mkdir -p "$HOME_DIR/$run/codex"
+        render_codex_agent "$HOME_DIR/$run/agent.md"
+        cmdline+=(--agent-file "$HOME_DIR/$run/agent.md")
+        ;;
+    esac
+    launch "$run" "$HOME_DIR/$run/round-1" "${cmdline[@]}" ${extra[@]+"${extra[@]}"}
+    echo "$run"
+    ;;
+  resume)
+    run="${1:-}"; need_run "$run"
+    rd="$(round_dir "$run")"
+    [ -f "$rd/exit" ] || die "round still running; wait for it first"
+    sid="$(session_id "$run")"
+    [ -n "$sid" ] || die "no session id recorded for $run (no round finished cleanly); start a new run instead"
+    echo "$sid" > "$HOME_DIR/$run/session"
+    n=$(( $(cat "$HOME_DIR/$run/round") + 1 )); echo "$n" > "$HOME_DIR/$run/round"
+    cmdline=()
+    while IFS= read -r line; do cmdline+=("$line"); done < <(kimi_cmd "$run")
+    # The agent profile (read-only / codex) is bound to the session and restored on resume.
+    launch "$run" "$HOME_DIR/$run/round-$n" "${cmdline[@]}" --session "$sid"
+    echo "$run round $n"
+    ;;
+  wait)
+    run="${1:-}"; need_run "$run"; shift
+    timeout=540
+    if [ "${1:-}" = "--timeout" ]; then timeout="$2"; fi
+    rd="$(round_dir "$run")"
+    end=$(( $(date +%s) + timeout ))
+    while [ ! -f "$rd/exit" ] && [ "$(date +%s)" -lt "$end" ]; do
+      kill -0 "$(cat "$rd/pid" 2>/dev/null || echo 0)" 2>/dev/null || break
+      sleep 5
+    done
+    print_status "$run"
+    ;;
+  status) run="${1:-}"; need_run "$run"; print_status "$run" ;;
+  log)
+    run="${1:-}"; need_run "$run"; n="${2:-20}"
+    print_log "$(round_dir "$run")/events.jsonl" "$n"
+    ;;
+  stop)
+    run="${1:-}"; need_run "$run"; rd="$(round_dir "$run")"
+    kill_group "$rd"
+    if [ ! -f "$rd/exit" ]; then echo 143 > "$rd/exit"; fi
+    if [ -d "$HOME_DIR/$run/codex" ]; then
+      for r in "$HOME_DIR/$run/codex"/*/; do
+        [ -f "$r/round" ] || continue
+        crd="$r/round-$(cat "$r/round")"
+        if [ ! -f "$crd/exit" ]; then kill_group "$crd"; echo 143 > "$crd/exit"; echo "stopped codex run $(basename "$r")"; fi
+      done
+    fi
+    echo "stopped $run"
+    ;;
+  *) sed -n '2,24p' "$0"; exit 2 ;;
+esac

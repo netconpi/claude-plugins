@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# codex-task: run Codex CLI jobs in the background so a Claude subagent can wait
+# on them in chunks shorter than its tool timeout, and resume the same Codex
+# thread with follow-up instructions.
+#
+#   codex-task start  --cd DIR [--sandbox MODE] [--name NAME]  < brief.md   -> prints RUN id
+#   codex-task wait   RUN [--timeout SECONDS]                                -> blocks, prints status
+#   codex-task resume RUN                                      < followup.md -> next round, same thread
+#   codex-task status RUN
+#   codex-task log    RUN [N]        # last N agent messages / commands of the current round
+#
+# Portable to macOS (bash 3.2, no setsid). Bundled copy of codex-delegation/scripts/codex-task for Kimi.
+#   codex-task stop   RUN
+#
+# Defaults (override via env):
+#   CODEX_TASK_MODEL   model id            (default: gpt-6.1-sol)
+#   CODEX_TASK_EFFORT  reasoning effort    (default: high)
+#   CODEX_TASK_HOME    run directory root  (default: ~/.cache/codex-task)
+set -euo pipefail
+
+MODEL="${CODEX_TASK_MODEL:-gpt-6.1-sol}"
+EFFORT="${CODEX_TASK_EFFORT:-high}"
+HOME_DIR="${CODEX_TASK_HOME:-$HOME/.cache/codex-task}"
+
+die() { echo "codex-task: $*" >&2; exit 2; }
+need_run() { [ -n "${1:-}" ] && [ -d "$HOME_DIR/$1" ] || die "unknown run '${1:-}'"; }
+round_dir() { echo "$HOME_DIR/$1/round-$(cat "$HOME_DIR/$1/round")"; }
+
+thread_id() {
+  local f="$HOME_DIR/$1/round-1/events.jsonl"
+  [ -f "$f" ] && sed -n 's/.*"type":"thread.started","thread_id":"\([^"]*\)".*/\1/p' "$f" | head -1
+}
+
+# Prefix that puts a command in its own process group, so `stop` can kill the whole tree.
+# setsid is not on stock macOS; perl is.
+if command -v setsid >/dev/null 2>&1; then
+  DETACH=(setsid nohup)
+elif command -v perl >/dev/null 2>&1; then
+  DETACH=(nohup perl -e 'use POSIX (); POSIX::setsid(); exec @ARGV or die "exec: $!"')
+else
+  DETACH=(nohup)
+fi
+
+# Launch one Codex round detached from this shell; stdin of this process is the prompt.
+launch() {
+  local run="$1" rd="$2"; shift 2
+  mkdir -p "$rd"
+  cat > "$rd/prompt.md"
+  [ -s "$rd/prompt.md" ] || die "empty prompt on stdin"
+  local cwd; cwd="$(cat "$HOME_DIR/$run/cwd")"
+  (
+    cd "$cwd"
+    "${DETACH[@]}" bash -c '
+      rd="$1"; shift
+      "$@" < "$rd/prompt.md" > "$rd/events.jsonl" 2> "$rd/stderr.log"
+      echo $? > "$rd/exit"
+    ' _ "$rd" "$@" >/dev/null 2>&1 &
+    echo $! > "$rd/pid"
+  )
+  date +%s > "$rd/started"
+}
+
+# Sets the global array `flags` (no mapfile: macOS ships bash 3.2).
+common_flags() {
+  local sandbox; sandbox="$(cat "$HOME_DIR/$1/sandbox")"
+  flags=(--json -m "$MODEL"
+    -c "model_reasoning_effort=\"$EFFORT\""
+    -c 'approval_policy="never"'
+    -c "sandbox_mode=\"$sandbox\""
+    --skip-git-repo-check)
+}
+
+print_status() {
+  local run="$1" rd; rd="$(round_dir "$run")"
+  local now started; now=$(date +%s); started=$(cat "$rd/started" 2>/dev/null || echo "$now")
+  echo "run: $run"
+  echo "round: $(cat "$HOME_DIR/$run/round")"
+  echo "thread: $(thread_id "$run")"
+  echo "cwd: $(cat "$HOME_DIR/$run/cwd")"
+  echo "elapsed: $((now - started))s"
+  if [ -f "$rd/exit" ]; then
+    echo "state: done"
+    echo "exit: $(cat "$rd/exit")"
+    if grep -q '"type":"turn.failed"\|"type":"error"' "$rd/events.jsonl" 2>/dev/null; then
+      echo "errors:"; grep '"type":"turn.failed"\|"type":"error"' "$rd/events.jsonl" | tail -3
+    fi
+    echo "--- final message ($rd/last.md) ---"
+    { cat "$rd/last.md" && echo; } 2>/dev/null || echo "(none; see $rd/stderr.log)"
+  else
+    if kill -0 "$(cat "$rd/pid" 2>/dev/null || echo 0)" 2>/dev/null; then
+      echo "state: running"
+    else
+      echo "state: died (no exit code; see $rd/stderr.log)"
+    fi
+  fi
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  start)
+    cwd="$PWD" sandbox="workspace-write" name="task"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --cd) cwd="$2"; shift 2 ;;
+        --sandbox) sandbox="$2"; shift 2 ;;
+        --name) name="$2"; shift 2 ;;
+        *) die "unknown option $1" ;;
+      esac
+    done
+    [ -d "$cwd" ] || die "no such directory $cwd"
+    case "$sandbox" in read-only|workspace-write|danger-full-access) ;; *) die "bad sandbox $sandbox" ;; esac
+    run="$(date +%Y%m%d-%H%M%S)-$(printf %s "$name" | tr -c 'a-zA-Z0-9-' '-' | cut -c1-30)-$$"
+    mkdir -p "$HOME_DIR/$run"
+    (cd "$cwd" && pwd) > "$HOME_DIR/$run/cwd"
+    echo "$sandbox" > "$HOME_DIR/$run/sandbox"
+    echo 1 > "$HOME_DIR/$run/round"
+    rd="$HOME_DIR/$run/round-1"
+    common_flags "$run"
+    launch "$run" "$rd" codex exec "${flags[@]}" -o "$rd/last.md" -
+    echo "$run"
+    ;;
+  resume)
+    run="${1:-}"; need_run "$run"
+    rd="$(round_dir "$run")"
+    [ -f "$rd/exit" ] || die "round still running; wait for it first"
+    tid="$(thread_id "$run")"; [ -n "$tid" ] || die "no thread id recorded for $run"
+    n=$(( $(cat "$HOME_DIR/$run/round") + 1 )); echo "$n" > "$HOME_DIR/$run/round"
+    rd="$HOME_DIR/$run/round-$n"
+    common_flags "$run"
+    launch "$run" "$rd" codex exec resume "${flags[@]}" -o "$rd/last.md" "$tid" -
+    echo "$run round $n"
+    ;;
+  wait)
+    run="${1:-}"; need_run "$run"; shift
+    timeout=540
+    [ "${1:-}" = "--timeout" ] && timeout="$2"
+    rd="$(round_dir "$run")"
+    end=$(( $(date +%s) + timeout ))
+    while [ ! -f "$rd/exit" ] && [ "$(date +%s)" -lt "$end" ]; do
+      kill -0 "$(cat "$rd/pid" 2>/dev/null || echo 0)" 2>/dev/null || break
+      sleep 5
+    done
+    print_status "$run"
+    ;;
+  status) run="${1:-}"; need_run "$run"; print_status "$run" ;;
+  log)
+    run="${1:-}"; need_run "$run"; n="${2:-20}"
+    grep '"type":"item.completed"' "$(round_dir "$run")/events.jsonl" 2>/dev/null | tail -n "$n" | cut -c1-400
+    ;;
+  stop)
+    run="${1:-}"; need_run "$run"; rd="$(round_dir "$run")"
+    pid="$(cat "$rd/pid")"; kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+    echo 143 > "$rd/exit"; echo "stopped $run"
+    ;;
+  *) sed -n '2,18p' "$0"; exit 2 ;;
+esac

@@ -9,6 +9,12 @@
       "description": "Delegate subagent work to the Codex CLI, with a Claude judge that verifies the result and pushes Codex until acceptance criteria pass.",
       "source": "./plugins/codex-delegation",
       "category": "development"
+    },
+    {
+      "name": "kimi-delegation",
+      "description": "Delegate subagent work to the Kimi Code CLI, with a Claude judge that verifies the result and pushes Kimi until acceptance criteria pass. Ultimate mode: Kimi orchestrates and judges Codex CLI runs.",
+      "source": "./plugins/kimi-delegation",
+      "category": "development"
     }
   ]
 }
