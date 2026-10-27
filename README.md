@@ -8,7 +8,7 @@ The orchestrator delegates subagent work to the Codex CLI. A Claude `codex-worke
 - `skills/codex-delegation/SKILL.md`: when and how the orchestrator delegates
 - `scripts/codex-task`: background wrapper around `codex exec` (`start` / `wait` / `resume` / `status` / `log` / `stop`); runs live in `~/.cache/codex-task/`
 
-Requirements on each machine: `codex` on PATH and logged in (`codex login status`), plus bash and setsid.
+Requirements on each machine: `codex` on PATH and logged in (`codex login status`). Works with macOS stock bash 3.2 and without setsid.
 Model and effort: `CODEX_TASK_MODEL` (default `gpt-6.1-sol`), `CODEX_TASK_EFFORT` (default `high`).
 
 ### Install

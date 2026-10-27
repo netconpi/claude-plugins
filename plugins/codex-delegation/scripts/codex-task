@@ -14,6 +14,8 @@
 #   CODEX_TASK_MODEL   model id            (default: gpt-6.1-sol)
 #   CODEX_TASK_EFFORT  reasoning effort    (default: high)
 #   CODEX_TASK_HOME    run directory root  (default: ~/.cache/codex-task)
+#
+# Portable to macOS: runs on the stock bash 3.2 and without setsid.
 set -euo pipefail
 
 MODEL="${CODEX_TASK_MODEL:-gpt-6.1-sol}"
@@ -29,6 +31,16 @@ thread_id() {
   [ -f "$f" ] && sed -n 's/.*"type":"thread.started","thread_id":"\([^"]*\)".*/\1/p' "$f" | head -1
 }
 
+# Prefix that puts a command in its own process group, so `stop` can kill the whole tree.
+# setsid is not on stock macOS; perl is.
+if command -v setsid >/dev/null 2>&1; then
+  DETACH=(setsid nohup)
+elif command -v perl >/dev/null 2>&1; then
+  DETACH=(nohup perl -e 'use POSIX (); POSIX::setsid(); exec @ARGV or die "exec: $!"')
+else
+  DETACH=(nohup)
+fi
+
 # Launch one Codex round detached from this shell; stdin of this process is the prompt.
 launch() {
   local run="$1" rd="$2"; shift 2
@@ -38,7 +50,7 @@ launch() {
   local cwd; cwd="$(cat "$HOME_DIR/$run/cwd")"
   (
     cd "$cwd"
-    setsid nohup bash -c '
+    "${DETACH[@]}" bash -c '
       rd="$1"; shift
       "$@" < "$rd/prompt.md" > "$rd/events.jsonl" 2> "$rd/stderr.log"
       echo $? > "$rd/exit"
@@ -48,13 +60,14 @@ launch() {
   date +%s > "$rd/started"
 }
 
+# Sets the global array `flags` (no mapfile: macOS ships bash 3.2).
 common_flags() {
   local sandbox; sandbox="$(cat "$HOME_DIR/$1/sandbox")"
-  printf '%s\n' --json -m "$MODEL" \
-    -c "model_reasoning_effort=\"$EFFORT\"" \
-    -c 'approval_policy="never"' \
-    -c "sandbox_mode=\"$sandbox\"" \
-    --skip-git-repo-check
+  flags=(--json -m "$MODEL"
+    -c "model_reasoning_effort=\"$EFFORT\""
+    -c 'approval_policy="never"'
+    -c "sandbox_mode=\"$sandbox\""
+    --skip-git-repo-check)
 }
 
 print_status() {
@@ -102,7 +115,7 @@ case "$cmd" in
     echo "$sandbox" > "$HOME_DIR/$run/sandbox"
     echo 1 > "$HOME_DIR/$run/round"
     rd="$HOME_DIR/$run/round-1"
-    mapfile -t flags < <(common_flags "$run")
+    common_flags "$run"
     launch "$run" "$rd" codex exec "${flags[@]}" -o "$rd/last.md" -
     echo "$run"
     ;;
@@ -113,7 +126,7 @@ case "$cmd" in
     tid="$(thread_id "$run")"; [ -n "$tid" ] || die "no thread id recorded for $run"
     n=$(( $(cat "$HOME_DIR/$run/round") + 1 )); echo "$n" > "$HOME_DIR/$run/round"
     rd="$HOME_DIR/$run/round-$n"
-    mapfile -t flags < <(common_flags "$run")
+    common_flags "$run"
     launch "$run" "$rd" codex exec resume "${flags[@]}" -o "$rd/last.md" "$tid" -
     echo "$run round $n"
     ;;
@@ -139,5 +152,5 @@ case "$cmd" in
     pid="$(cat "$rd/pid")"; kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
     echo 143 > "$rd/exit"; echo "stopped $run"
     ;;
-  *) sed -n '2,17p' "$0"; exit 2 ;;
+  *) sed -n '2,18p' "$0"; exit 2 ;;
 esac
